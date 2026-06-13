@@ -159,6 +159,7 @@ python3 graph.py https://www.safcodental.com/catalog/sutures-surgical-products
 - **LLM cost on fallback.** Pages with non-standard layouts that the The BS4 extractor cannot cover fall back to the LLM which adds latency and cost per product.
 - **Login-gated content.** Products requiring account login are not accessible. The scraper will classify these as `blocked` and skip them.
 - **Restricted mode heuristic.** Subcategory URL filtering relies on path prefix matching. Sites with non-hierarchical URL structures (e.g. Magento ID-based category URLs) may not be fully crawled.
+- **No extraction metadata in output.** `products.jsonl` records contain no `scraped_at` timestamp, run ID, or schema version. This makes it difficult to track price/stock changes across multiple runs, deduplicate incrementally in a data warehouse, or attribute records to a specific scrape session. The SQLite `scraped_products` table does store a per-SKU timestamp internally, but it is not surfaced in the JSONL output.
 
 ---
 
