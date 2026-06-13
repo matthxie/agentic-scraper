@@ -17,6 +17,7 @@ import openai
 from bs4 import BeautifulSoup
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, StateGraph
+from langgraph.types import RetryPolicy
 
 from browser import browser_manager, PermanentBrowserError, TransientBrowserError
 from schemas import (
@@ -197,9 +198,8 @@ async def classify_page(state: ScraperState) -> ScraperState:
     except PermanentBrowserError as exc:
         logger.error("classify_page permanent failure: %s", exc)
         return state.model_copy(update={"page_type": "blocked"})
-    except TransientBrowserError as exc:
-        logger.warning("classify_page transient failure: %s", exc)
-        return state.model_copy(update={"page_type": "unknown"})
+    except TransientBrowserError:
+        raise  # let RetryPolicy handle it
 
     # Truncate content to avoid excessive token usage
     content_for_llm = (state.html_content or "")[:12_000]
@@ -316,9 +316,8 @@ async def navigate_category(state: ScraperState) -> ScraperState:
     except PermanentBrowserError as exc:
         logger.error("navigate_category permanent failure: %s", exc)
         return state
-    except TransientBrowserError as exc:
-        logger.warning("navigate_category transient failure: %s", exc)
-        return state
+    except TransientBrowserError:
+        raise  # let RetryPolicy handle it
 
     # 1. Product links via JSON-LD ItemList (primary)
     product_links = _extract_jsonld_products(raw_html)
@@ -584,9 +583,18 @@ def _route_after_classify(state: ScraperState) -> str:
 def _build_graph(checkpointer: Any = None) -> Any:
     builder = StateGraph(ScraperState)
 
-    builder.add_node("classify_page", classify_page)
-    builder.add_node("navigate_category", navigate_category)
-    builder.add_node("extract_product", extract_product)
+    # Retry transient browser and OpenAI errors; give up on permanent failures.
+    _transient_policy = RetryPolicy(
+        max_attempts=3,
+        initial_interval=2.0,
+        backoff_factor=2.0,
+        max_interval=30.0,
+        retry_on=lambda exc: isinstance(exc, (TransientBrowserError, openai.APITimeoutError, openai.RateLimitError)),
+    )
+
+    builder.add_node("classify_page", classify_page, retry_policy=_transient_policy)
+    builder.add_node("navigate_category", navigate_category, retry_policy=_transient_policy)
+    builder.add_node("extract_product", extract_product, retry_policy=_transient_policy)
     builder.add_node("validate_and_store", validate_and_store)
 
     builder.set_entry_point("classify_page")
