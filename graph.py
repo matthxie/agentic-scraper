@@ -37,6 +37,10 @@ MODEL = "gpt-4o-mini"
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("scraper.log", encoding="utf-8"),
+    ],
 )
 logger = logging.getLogger(__name__)
 
