@@ -18,7 +18,7 @@ from bs4 import BeautifulSoup
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, StateGraph
 
-from browser import browser_manager
+from browser import browser_manager, PermanentBrowserError, TransientBrowserError
 from schemas import (
     PageClassification,
     ProductData,
@@ -194,8 +194,11 @@ async def classify_page(state: ScraperState) -> ScraperState:
     try:
         body_text, _ = await browser_manager.navigate(state.current_url)
         state = state.model_copy(update={"html_content": body_text})
-    except Exception as exc:
-        logger.error("classify_page navigation failed: %s", exc)
+    except PermanentBrowserError as exc:
+        logger.error("classify_page permanent failure: %s", exc)
+        return state.model_copy(update={"page_type": "blocked"})
+    except TransientBrowserError as exc:
+        logger.warning("classify_page transient failure: %s", exc)
         return state.model_copy(update={"page_type": "unknown"})
 
     # Truncate content to avoid excessive token usage
@@ -310,8 +313,11 @@ async def navigate_category(state: ScraperState) -> ScraperState:
     # Fetch raw HTML (html_content holds inner text from classify; we need HTML for JSON-LD)
     try:
         raw_html = await browser_manager.get_raw_html(state.current_url)
-    except Exception as exc:
-        logger.error("navigate_category HTML fetch failed: %s", exc)
+    except PermanentBrowserError as exc:
+        logger.error("navigate_category permanent failure: %s", exc)
+        return state
+    except TransientBrowserError as exc:
+        logger.warning("navigate_category transient failure: %s", exc)
         return state
 
     # 1. Product links via JSON-LD ItemList (primary)
@@ -470,6 +476,12 @@ async def _llm_extract(url: str) -> Dict[str, Any]:
             ],
         )
         return product.model_dump()
+    except PermanentBrowserError as exc:
+        logger.error("_llm_extract permanent failure for %s: %s", url, exc)
+        return {"product_url": url, "product_name": None, "variations": []}
+    except TransientBrowserError as exc:
+        logger.warning("_llm_extract transient failure for %s: %s", url, exc)
+        return {"product_url": url, "product_name": None, "variations": []}
     except Exception as exc:
         logger.error("_llm_extract failed for %s: %s", url, exc)
         return {"product_url": url, "product_name": None, "variations": []}
