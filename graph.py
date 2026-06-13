@@ -291,16 +291,24 @@ def _next_page_url(current_url: str, html: str) -> Optional[str]:
     """Derive the next pagination URL from the current URL or HTML links."""
     soup = BeautifulSoup(html, "html.parser")
 
-    # 1. Standard rel=next / class-based selectors
-    for selector in ['a[rel="next"]', ".next-page a", "a.pagination-next", "a.action.next"]:
+    # 1. Standard rel=next / class-based selectors (includes Algolia and aria-label)
+    for selector in [
+        'a[rel="next"]',
+        ".next-page a",
+        "a.pagination-next",
+        "a.action.next",
+        ".ais-Pagination-item--nextPage a",
+        'a[aria-label*="Next"]',
+    ]:
         tag = soup.select_one(selector)
         if tag and tag.get("href"):
             return _resolve_url(current_url, tag["href"])
 
-    # 2. Algolia pagination (ais-Pagination-link) or generic text "Next Page"
+    # 2. Text or aria-label contains "next" and href has "page="
     for a in soup.find_all("a"):
         text = a.get_text(strip=True).lower()
-        if "next" in text and a.get("href") and "page=" in a["href"]:
+        label = (a.get("aria-label") or "").lower()
+        if ("next" in text or "next" in label) and a.get("href") and "page=" in a["href"]:
             resolved = _resolve_url(current_url, a["href"])
             # Sanity check: must actually advance beyond the current page
             if resolved != current_url:
