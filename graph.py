@@ -221,6 +221,7 @@ async def classify_page(state: ScraperState) -> ScraperState:
 # ---------------------------------------------------------------------------
 
 _PRODUCT_URL_RE = re.compile(r"/product/", re.IGNORECASE)
+_root_url: str = ""
 
 
 def _extract_jsonld_products(html: str) -> List[str]:
@@ -243,21 +244,26 @@ def _extract_jsonld_products(html: str) -> List[str]:
 
 
 def _extract_subcategory_links(html: str, current_url: str) -> List[str]:
-    """Return sub-category links that are one level deeper than current_url."""
+    """Return sub-category links found on the page.
+
+    In restricted mode (_root_url is set) only links within the root subtree
+    are returned. In unrestricted mode all same-host category links are returned.
+    """
     from urllib.parse import urlparse
     soup = BeautifulSoup(html, "html.parser")
-    current_path = urlparse(current_url).path.rstrip("/")
+    root_path = urlparse(_root_url).path.rstrip("/") if _root_url else None
+    current_host = urlparse(current_url).netloc
     links: List[str] = []
     for tag in soup.find_all("a", href=True):
-        href: str = tag["href"]
-        full = _resolve_url(current_url, href)
-        parsed_path = urlparse(full).path.rstrip("/")
-        if (
-            parsed_path.startswith(current_path + "/")
-            and parsed_path.count("/") == current_path.count("/") + 1
-            and "safcodental.com" in full
-        ):
-            links.append(full)
+        full = _resolve_url(current_url, tag["href"])
+        parsed = urlparse(full)
+        if parsed.netloc != current_host:
+            continue
+        if _PRODUCT_URL_RE.search(parsed.path):
+            continue
+        if root_path is not None and not parsed.path.rstrip("/").startswith(root_path + "/"):
+            continue
+        links.append(full)
     return list(set(links))
 
 
@@ -585,15 +591,25 @@ _graph = _build_graph()
 
 
 
-async def run_scraper(start_url: str, max_products: Optional[int] = None) -> None:
+async def run_scraper(
+    start_url: str,
+    max_products: Optional[int] = None,
+    restricted: bool = True,
+) -> None:
     """
     Initialise the database, seed the start URL, and process all queued URLs.
 
     Args:
-        start_url: The entry-point category URL to begin crawling from.
-        max_products: Stop after this many unique product SKUs have been stored.
-                      None (default) means run until the queue is exhausted.
+        start_url:    The entry-point category URL to begin crawling from.
+        max_products: Stop after this many products written to JSONL.
+                      None means run until the queue is exhausted.
+        restricted:   If True, subcategory discovery is limited to URLs that
+                      fall under start_url's path. If False, the scraper follows
+                      any category link found on the page.
     """
+    global _root_url
+    _root_url = start_url if restricted else ""
+
     await init_db()
     await browser_manager.start()
     await upsert_url(start_url, "category", "pending")
@@ -635,8 +651,12 @@ async def run_scraper(start_url: str, max_products: Optional[int] = None) -> Non
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import sys
+    import argparse
 
-    start = sys.argv[1] if len(sys.argv) > 1 else "https://www.safcodental.com/catalog"
-    limit = int(sys.argv[2]) if len(sys.argv) > 2 else None
-    asyncio.run(run_scraper(start, max_products=limit))
+    parser = argparse.ArgumentParser(description="Safco Dental agentic scraper")
+    parser.add_argument("start_url", nargs="?", default="https://www.safcodental.com/catalog")
+    parser.add_argument("--max-products", type=int, default=None)
+    parser.add_argument("--unrestricted", action="store_true", help="Follow category links outside the start URL's subtree")
+    args = parser.parse_args()
+
+    asyncio.run(run_scraper(args.start_url, max_products=args.max_products, restricted=not args.unrestricted))
