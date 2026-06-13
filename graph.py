@@ -14,6 +14,9 @@ from typing import Any, Dict, List, Optional
 import aiosqlite
 import instructor
 import openai
+from dotenv import load_dotenv
+
+load_dotenv()
 from bs4 import BeautifulSoup
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, StateGraph
@@ -622,6 +625,21 @@ def _build_graph(checkpointer: Any = None) -> Any:
 
 
 
+async def _log_run_summary(initial_jsonl_lines: int) -> None:
+    """Log a one-shot summary of what the run accomplished."""
+    products_written = _count_jsonl_lines() - initial_jsonl_lines
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT status, COUNT(*) FROM url_queue GROUP BY status") as cur:
+            counts = {row[0]: row[1] async for row in cur}
+    completed = counts.get("completed", 0)
+    failed = counts.get("failed", 0)
+    pending = counts.get("pending", 0)
+    logger.info(
+        "Run complete — products written: %d | URLs completed: %d | failed: %d | still pending: %d",
+        products_written, completed, failed, pending,
+    )
+
+
 async def run_scraper(
     start_url: str,
     max_products: Optional[int] = None,
@@ -680,6 +698,7 @@ async def run_scraper(
                     logger.error("Graph execution failed for %s: %s", url, exc)
                     await mark_url_status(url, "failed")
         finally:
+            await _log_run_summary(initial_jsonl_lines)
             await browser_manager.stop()
 
 

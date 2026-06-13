@@ -30,7 +30,6 @@ class ScraperState(BaseModel):
     discovered_urls: List[str] = Field(default_factory=list)
     extracted_data: Optional[Dict[str, Any]] = None
     validation_errors: List[str] = Field(default_factory=list)
-    retry_count: int = 0
 
 
 class PageClassification(BaseModel):

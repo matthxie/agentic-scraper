@@ -7,4 +7,5 @@ markdownify>=0.12.0
 openai>=1.30.0
 playwright>=1.44.0
 pydantic>=2.7.0
+python-dotenv>=1.0.0
 lxml>=5.2.0
