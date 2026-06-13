@@ -160,6 +160,14 @@ def _append_jsonl(data: Dict[str, Any]) -> None:
         fh.write(json.dumps(data, ensure_ascii=False) + "\n")
 
 
+def _count_jsonl_lines() -> int:
+    try:
+        with open(JSONL_PATH, "rb") as fh:
+            return sum(1 for line in fh if line.strip())
+    except FileNotFoundError:
+        return 0
+
+
 # ---------------------------------------------------------------------------
 # Node 1 — classify_page
 # ---------------------------------------------------------------------------
@@ -576,12 +584,6 @@ _graph = _build_graph()
 # ---------------------------------------------------------------------------
 
 
-async def count_scraped_products() -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT COUNT(*) FROM scraped_products") as cursor:
-            row = await cursor.fetchone()
-    return row[0] if row else 0
-
 
 async def run_scraper(start_url: str, max_products: Optional[int] = None) -> None:
     """
@@ -596,16 +598,17 @@ async def run_scraper(start_url: str, max_products: Optional[int] = None) -> Non
     await browser_manager.start()
     await upsert_url(start_url, "category", "pending")
 
+    initial_jsonl_lines = _count_jsonl_lines()
     logger.info("Starting scraper from: %s (max_products=%s)", start_url, max_products)
 
     try:
         while True:
             if max_products is not None:
-                scraped = await count_scraped_products()
-                if scraped >= max_products:
+                written = _count_jsonl_lines() - initial_jsonl_lines
+                if written >= max_products:
                     logger.info(
                         "Reached max_products limit (%d/%d) — scraper finished.",
-                        scraped, max_products,
+                        written, max_products,
                     )
                     break
 
