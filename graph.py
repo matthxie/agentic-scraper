@@ -15,6 +15,7 @@ import aiosqlite
 import instructor
 import openai
 from bs4 import BeautifulSoup
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, StateGraph
 
 from browser import browser_manager
@@ -91,6 +92,15 @@ async def upsert_url(url: str, url_type: Optional[str], status: str) -> None:
             VALUES (?, ?, ?, ?)
             """,
             (url, url_type, status, _now_iso()),
+        )
+        await db.commit()
+
+
+async def _reset_stale_processing() -> None:
+    """Reset any URLs left in 'processing' from a previous crashed run."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE url_queue SET status = 'pending' WHERE status = 'processing'"
         )
         await db.commit()
 
@@ -555,7 +565,7 @@ def _route_after_classify(state: ScraperState) -> str:
 # next queued URL and re-enters the graph, eventually hitting product pages.
 
 
-def _build_graph() -> Any:
+def _build_graph(checkpointer: Any = None) -> Any:
     builder = StateGraph(ScraperState)
 
     builder.add_node("classify_page", classify_page)
@@ -579,10 +589,7 @@ def _build_graph() -> Any:
     builder.add_edge("extract_product", "validate_and_store")
     builder.add_edge("validate_and_store", END)
 
-    return builder.compile()
-
-
-_graph = _build_graph()
+    return builder.compile(checkpointer=checkpointer)
 
 
 # ---------------------------------------------------------------------------
@@ -611,39 +618,44 @@ async def run_scraper(
     _root_url = start_url if restricted else ""
 
     await init_db()
+    await _reset_stale_processing()
     await browser_manager.start()
     await upsert_url(start_url, "category", "pending")
 
     initial_jsonl_lines = _count_jsonl_lines()
     logger.info("Starting scraper from: %s (max_products=%s)", start_url, max_products)
 
-    try:
-        while True:
-            if max_products is not None:
-                written = _count_jsonl_lines() - initial_jsonl_lines
-                if written >= max_products:
-                    logger.info(
-                        "Reached max_products limit (%d/%d) — scraper finished.",
-                        written, max_products,
-                    )
+    async with AsyncSqliteSaver.from_conn_string("checkpoints.db") as checkpointer:
+        graph = _build_graph(checkpointer=checkpointer)
+
+        try:
+            while True:
+                if max_products is not None:
+                    written = _count_jsonl_lines() - initial_jsonl_lines
+                    if written >= max_products:
+                        logger.info(
+                            "Reached max_products limit (%d/%d) — scraper finished.",
+                            written, max_products,
+                        )
+                        break
+
+                url = await pull_next_pending()
+                if url is None:
+                    logger.info("URL queue exhausted — scraper finished.")
                     break
 
-            url = await pull_next_pending()
-            if url is None:
-                logger.info("URL queue exhausted — scraper finished.")
-                break
+                logger.info("Processing URL: %s", url)
+                config = {"configurable": {"thread_id": url}}
+                initial_state = ScraperState(current_url=url)
 
-            logger.info("Processing URL: %s", url)
-            initial_state = ScraperState(current_url=url)
-
-            try:
-                result = await _graph.ainvoke(initial_state)
-                logger.debug("Graph completed for %s, final state: %s", url, result)
-            except Exception as exc:
-                logger.error("Graph execution failed for %s: %s", url, exc)
-                await mark_url_status(url, "failed")
-    finally:
-        await browser_manager.stop()
+                try:
+                    await graph.ainvoke(initial_state, config=config)
+                    logger.debug("Graph completed for %s", url)
+                except Exception as exc:
+                    logger.error("Graph execution failed for %s: %s", url, exc)
+                    await mark_url_status(url, "failed")
+        finally:
+            await browser_manager.stop()
 
 
 # ---------------------------------------------------------------------------
