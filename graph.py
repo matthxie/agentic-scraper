@@ -654,6 +654,7 @@ async def run_scraper(
 
                 try:
                     await graph.ainvoke(initial_state, config=config)
+                    await mark_url_status(url, "completed")
                     logger.debug("Graph completed for %s", url)
                 except Exception as exc:
                     logger.error("Graph execution failed for %s: %s", url, exc)

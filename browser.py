@@ -63,13 +63,22 @@ class BrowserManager:
         """Tear down context, browser, and Playwright in order."""
         async with self._lock:
             if self._context is not None:
-                await self._context.close()
+                try:
+                    await self._context.close()
+                except Exception:
+                    pass
                 self._context = None
             if self._browser is not None:
-                await self._browser.close()
+                try:
+                    await self._browser.close()
+                except Exception:
+                    pass
                 self._browser = None
             if self._playwright is not None:
-                await self._playwright.stop()
+                try:
+                    await self._playwright.stop()
+                except Exception:
+                    pass
                 self._playwright = None
 
     # ------------------------------------------------------------------
